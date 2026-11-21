@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun MainScreen(db:AppDb) {
     var page by remember { mutableStateOf("الرئيسية") }
     var refresh by remember { mutableIntStateOf(0) }
