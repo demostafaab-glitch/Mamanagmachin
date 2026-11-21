@@ -177,13 +177,13 @@ class MainActivity : ComponentActivity() {
 @Composable private fun AddItemDialog(save:(String,String,Double,Double,String)->Unit,close:()->Unit) {
     var name by remember { mutableStateOf("") };var unit by remember { mutableStateOf("قطعة") };var qty by remember { mutableStateOf("0") };var min by remember { mutableStateOf("0") };var note by remember { mutableStateOf("") }
     AlertDialog(onDismissRequest=close,title={Text("إضافة مادة")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
-        Field("اسم المادة",name){name=it};Field("وحدة القياس",unit){unit=it};Field("الكمية الحالية",qty,{qty=it},true);Field("حد التنبيه",min,{min=it},true);Field("ملاحظات",note){note=it}
+        Field("اسم المادة",name,{name=it});Field("وحدة القياس",unit,{unit=it});Field("الكمية الحالية",qty,{qty=it},true);Field("حد التنبيه",min,{min=it},true);Field("ملاحظات",note,{note=it})
     }},confirmButton={TextButton(onClick={if(name.isNotBlank()) save(name,unit,qty.toDoubleOrNull()?:0.0,min.toDoubleOrNull()?:0.0,note)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
 @Composable private fun AddMachineDialog(save:(String,String,Double,String,Double)->Unit,close:()->Unit) {
     var name by remember { mutableStateOf("") };var code by remember { mutableStateOf("") };var hours by remember { mutableStateOf("0") };var driver by remember { mutableStateOf("") };var avg by remember { mutableStateOf("0") }
     AlertDialog(onDismissRequest=close,title={Text("إضافة آلية")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
-        Field("اسم الآلية",name){name=it};Field("الرقم/الرمز",code){code=it};Field("عداد الساعات",hours,{hours=it},true);Field("السائق",driver){driver=it};Field("متوسط استهلاك الوقود",avg,{avg=it},true)
+        Field("اسم الآلية",name,{name=it});Field("الرقم/الرمز",code,{code=it});Field("عداد الساعات",hours,{hours=it},true);Field("السائق",driver,{driver=it});Field("متوسط استهلاك الوقود",avg,{avg=it},true)
     }},confirmButton={TextButton(onClick={if(name.isNotBlank()) save(name,code,hours.toDoubleOrNull()?:0.0,driver,avg.toDoubleOrNull()?:0.0)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
 @Composable private fun AddMovementDialog(db:AppDb,done:()->Unit,close:()->Unit) {
@@ -193,7 +193,7 @@ class MainActivity : ComponentActivity() {
         else {
             Text("المادة");opts.forEach { (id,label)->Row(verticalAlignment=Alignment.CenterVertically) { RadioButton(selected==id,{selected=id});Text(label) } }
             Text("نوع الحركة");Row { listOf("إدخال","صرف","إرجاع").forEach { t->Row(verticalAlignment=Alignment.CenterVertically) { RadioButton(type==t,{type=t});Text(t) } } }
-            Field("الكمية",qty,{qty=it},true);Field("الآلية (اختياري)",vehicle){vehicle=it};Field("ملاحظات",note){note=it}
+            Field("الكمية",qty,{qty=it},true);Field("الآلية (اختياري)",vehicle,{vehicle=it});Field("ملاحظات",note,{note=it})
         }
     }},confirmButton={TextButton(enabled=opts.isNotEmpty(),onClick={val amount=qty.toDoubleOrNull()?:0.0;if(amount>0){db.move(selected,type,amount,vehicle,note);done()}}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
