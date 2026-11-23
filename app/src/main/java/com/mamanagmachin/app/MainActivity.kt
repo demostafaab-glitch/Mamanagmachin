@@ -125,7 +125,7 @@ class MainActivity : ComponentActivity() {
                     "المستودع" -> ItemList(db)
                     "الآليات" -> MachineList(db)
                     "الحركات" -> MovementList(db)
-                    "الصيانة" -> MaintenanceScreen(db,{refresh++;showAdd=false})
+                    "الصيانة" -> MaintenanceScreen(db,{refresh++},{showAdd=true})
                     else -> ReportsScreen(db)
                 }
             }
@@ -133,8 +133,8 @@ class MainActivity : ComponentActivity() {
         if(showAdd) {
             when(page) {
                 "الصيانة" -> MaintenanceAddDialog(db,{refresh++;showAdd=false},{showAdd=false})
-                "المستودع" -> AddItemDialog(db,{n,u,q,m,note,warehouse,machineIds -> db.addItem(n,u,q,m,note,warehouse,machineIds,today());refresh++;showAdd=false},{showAdd=false})
-                "الآليات" -> AddMachineDialog({n,c,h,d -> db.addMachine(n,c,h,d,today());refresh++;showAdd=false},{showAdd=false})
+                "المستودع" -> AddItemDialog(db,{n,u,q,m,note,warehouse,machineIds,date -> db.addItem(n,u,q,m,note,warehouse,machineIds,date);refresh++;showAdd=false},{showAdd=false})
+                "الآليات" -> AddMachineDialog({n,c,h,d,date -> db.addMachine(n,c,h,d,date);refresh++;showAdd=false},{showAdd=false})
                 "الحركات" -> AddMovementDialog(db,{refresh++;showAdd=false},{showAdd=false})
             }
         }
@@ -247,7 +247,7 @@ private fun today():String=SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date(
 @Composable private fun Field(label:String,value:String,onChange:(String)->Unit,number:Boolean=false) {
     OutlinedTextField(value,onChange,label={Text(label)},modifier=Modifier.fillMaxWidth(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=if(number) KeyboardType.Decimal else KeyboardType.Text))
 }
-@Composable private fun AddItemDialog(db:AppDb,save:(String,String,Double,Double,String,Boolean,List<Long>)->Unit,close:()->Unit) {
+@Composable private fun AddItemDialog(db:AppDb,save:(String,String,Double,Double,String,Boolean,List<Long>,String)->Unit,close:()->Unit) {
  var name by remember{mutableStateOf("")};var unit by remember{mutableStateOf("قطعة")};var customUnit by remember{mutableStateOf("")};var qty by remember{mutableStateOf("0")};var min by remember{mutableStateOf("0")};var note by remember{mutableStateOf("")};var date by remember{mutableStateOf(today())}
  var warehouse by remember{mutableStateOf(true)};val machines=db.machines();val selected=remember{mutableStateListOf<Long>()}
  AlertDialog(onDismissRequest=close,title={Text("إضافة مادة")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)){
@@ -256,14 +256,14 @@ private fun today():String=SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date(
   Row(verticalAlignment=Alignment.CenterVertically){Checkbox(warehouse,{warehouse=it});Text("المستودع")}
   machines.forEach{(id,label)->Row(verticalAlignment=Alignment.CenterVertically){Checkbox(selected.contains(id),{if(it)selected.add(id)else selected.remove(id)});Text("الآليات: $label")}}
   Field("ملاحظات",note,{note=it})
- }},confirmButton={TextButton(onClick={if(name.isNotBlank()&&(warehouse||selected.isNotEmpty()))save(name,if(unit=="أخرى")customUnit else unit,qty.toDoubleOrNull()?:0.0,min.toDoubleOrNull()?:0.0,note,warehouse,selected.toList())}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
+ }},confirmButton={TextButton(onClick={if(name.isNotBlank()&&(warehouse||selected.isNotEmpty()))save(name,if(unit=="أخرى")customUnit else unit,qty.toDoubleOrNull()?:0.0,min.toDoubleOrNull()?:0.0,note,warehouse,selected.toList(),date)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
-@Composable private fun AddMachineDialog(save:(String,String,Double,String)->Unit,close:()->Unit) {
- var name by remember{mutableStateOf("")};var code by remember{mutableStateOf("")};var hours by remember{mutableStateOf("0")};var driver by remember{mutableStateOf("")}
+@Composable private fun AddMachineDialog(save:(String,String,Double,String,String)->Unit,close:()->Unit) {
+ var name by remember{mutableStateOf("")};var code by remember{mutableStateOf("")};var hours by remember{mutableStateOf("0")};var driver by remember{mutableStateOf("")};var date by remember{mutableStateOf(today())}
  AlertDialog(onDismissRequest=close,title={Text("إضافة آلية")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)){
-  Field("اسم الآلية",name,{name=it});Field("الرقم/الرمز",code,{code=it});Field("قراءة عداد الساعات الحالية",hours,{hours=it},true);Field("السائق",driver,{driver=it})
+  Field("اسم الآلية",name,{name=it});Field("الرقم/الرمز",code,{code=it});Field("قراءة عداد الساعات الحالية",hours,{hours=it},true);Field("السائق",driver,{driver=it});DateField("تاريخ إضافة الآلية",date,{date=it})
   Text("سيحسب البرنامج متوسط استهلاك الوقود تلقائياً من سجلات التشغيل.",style=MaterialTheme.typography.bodySmall)
- }},confirmButton={TextButton(onClick={if(name.isNotBlank())save(name,code,hours.toDoubleOrNull()?:0.0,driver)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
+ }},confirmButton={TextButton(onClick={if(name.isNotBlank())save(name,code,hours.toDoubleOrNull()?:0.0,driver,date)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
 @Composable private fun AddWorkDialog(machine:String,save:(Double,Double,String)->Unit,close:()->Unit) {
  var hours by remember{mutableStateOf("")};var fuel by remember{mutableStateOf("")}
