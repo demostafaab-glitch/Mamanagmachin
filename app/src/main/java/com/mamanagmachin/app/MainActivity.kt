@@ -58,13 +58,23 @@ private class AppDb(context: android.content.Context) : SQLiteOpenHelper(context
    d.insert("movements",null,ContentValues().apply { put("item_id",itemId);put("type",type);put("qty",qty);put("vehicle",vehicle);put("note",note);put("created",SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.getDefault()).format(Date())) });d.setTransactionSuccessful()
   } finally { d.endTransaction() }
  }
- fun recordWork(mid:Long,hours:Double,fuel:Double) {
-  require(hours>0&&fuel>=0);val d=writableDatabase;d.beginTransaction()
+ fun recordWork(mid:Long,hours:Double,fuel:Double,workDate:String) {
+  require(hours>0&&fuel>=0){"أدخل ساعات وكمية وقود صحيحتين"}
+  require(workDate.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))){"أدخل التاريخ بصيغة سنة-شهر-يوم"}
+  val d=writableDatabase;d.beginTransaction()
   try {
-   val fid=d.rawQuery("SELECT id FROM items WHERE name LIKE '%مازوت%' OR name LIKE '%ديزل%' OR name LIKE '%وقود%' ORDER BY id LIMIT 1",null).use { if(it.moveToFirst())it.getLong(0) else -1L }
-   require(fid>0){"أضف مادة باسم مازوت أو ديزل أو وقود أولاً"}
-   if(fuel>0){d.execSQL("UPDATE machine_stock SET qty=qty-? WHERE item_id=? AND machine_id=? AND qty>=?",arrayOf(fuel,fid,mid,fuel));check(scalar(d)>0){"رصيد وقود الآلية غير كافٍ"}}
-   d.insert("fuel_sessions",null,ContentValues().apply { put("machine_id",mid);put("hours_delta",hours);put("fuel_used",fuel);put("created",SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.getDefault()).format(Date())) })
+   if(fuel>0) {
+    val candidates=mutableListOf<Long>()
+    d.rawQuery("SELECT i.id FROM items i JOIN machine_stock s ON s.item_id=i.id WHERE s.machine_id=? AND s.qty>=? AND (i.name LIKE '%مازوت%' OR i.name LIKE '%ديزل%' OR i.name LIKE '%وقود%') ORDER BY s.qty DESC",arrayOf(mid.toString(),fuel.toString())).use { c->while(c.moveToNext())candidates.add(c.getLong(0)) }
+    val fid=candidates.firstOrNull()
+    if(fid==null) {
+     val exists=d.rawQuery("SELECT COUNT(*) FROM items WHERE name LIKE '%مازوت%' OR name LIKE '%ديزل%' OR name LIKE '%وقود%'",null).use { it.moveToFirst() && it.getInt(0)>0 }
+     if(!exists) throw IllegalArgumentException("لم تُسجّل مادة وقود بعد. أضف مادة باسم مازوت أو ديزل، ثم حوّل رصيدها إلى الآلية.")
+     throw IllegalArgumentException("رصيد المازوت/الديزل في هذه الآلية غير كافٍ. حوّل الكمية من المستودع إلى الآلية أولاً.")
+    }
+    d.execSQL("UPDATE machine_stock SET qty=qty-? WHERE item_id=? AND machine_id=? AND qty>=?",arrayOf(fuel,fid,mid,fuel))
+   }
+   d.insert("fuel_sessions",null,ContentValues().apply { put("machine_id",mid);put("hours_delta",hours);put("fuel_used",fuel);put("created","$workDate ${SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date())}") })
    d.execSQL("UPDATE machines SET hours=hours+? WHERE id=?",arrayOf(hours,mid));d.setTransactionSuccessful()
   } finally { d.endTransaction() }
  }
@@ -167,7 +177,7 @@ class MainActivity : ComponentActivity() {
    Button(onClick={workFor=id to r[1]},modifier=Modifier.fillMaxWidth()){Text("تسجيل ساعات العمل واستهلاك الوقود")}
   } }
  } }
- workFor?.let { v->AddWorkDialog(v.second,{h,f->db.recordWork(v.first,h,f);workFor=null},{workFor=null}) }
+ workFor?.let { v->AddWorkDialog(v.second,{h,f,date->db.recordWork(v.first,h,f,date);workFor=null},{workFor=null}) }
 }
 @Composable private fun MovementList(db:AppDb) {
     Text("سجل حركات المستودع",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
@@ -211,12 +221,21 @@ class MainActivity : ComponentActivity() {
   Text("سيحسب البرنامج متوسط استهلاك الوقود تلقائياً من سجلات التشغيل.",style=MaterialTheme.typography.bodySmall)
  }},confirmButton={TextButton(onClick={if(name.isNotBlank())save(name,code,hours.toDoubleOrNull()?:0.0,driver)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
-@Composable private fun AddWorkDialog(machine:String,save:(Double,Double)->Unit,close:()->Unit) {
+@Composable private fun AddWorkDialog(machine:String,save:(Double,Double,String)->Unit,close:()->Unit) {
  var hours by remember{mutableStateOf("")};var fuel by remember{mutableStateOf("")}
+ var workDate by remember{mutableStateOf(SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date()))}
+ var error by remember{mutableStateOf("")}
  AlertDialog(onDismissRequest=close,title={Text("تسجيل تشغيل: $machine")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
-  Field("ساعات العمل خلال هذه الفترة",hours,{hours=it},true);Field("الوقود المستهلك فعلياً (لتر)",fuel,{fuel=it},true)
+  Field("تاريخ التشغيل (سنة-شهر-يوم)",workDate,{workDate=it})
+  Field("ساعات العمل خلال هذه الفترة",hours,{hours=it},true)
+  Field("الوقود المستهلك فعلياً (لتر)",fuel,{fuel=it},true)
   Text("سيُحدّث عداد الساعات، ويُخصم الوقود من رصيد الآلية، ويُحسب المتوسط التراكمي لتر/ساعة.",style=MaterialTheme.typography.bodySmall)
- }},confirmButton={TextButton(onClick={val h=hours.toDoubleOrNull();val f=fuel.toDoubleOrNull();if(h!=null&&f!=null&&h>0&&f>=0)save(h,f)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
+  if(error.isNotBlank()) Text(error,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
+ }},confirmButton={TextButton(onClick={
+  val h=hours.toDoubleOrNull();val f=fuel.toDoubleOrNull()
+  if(h==null||f==null||h<=0||f<0) error="أدخل ساعات العمل والوقود بشكل صحيح."
+  else try { save(h,f,workDate.trim()) } catch(e:Exception) { error=e.message?: "تعذر حفظ سجل التشغيل." }
+ }){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
 @Composable private fun AddMovementDialog(db:AppDb,done:()->Unit,close:()->Unit) {
  val opts=db.itemOptions();val machines=db.machines();var selected by remember{mutableStateOf(opts.firstOrNull()?.first?:-1L)}
