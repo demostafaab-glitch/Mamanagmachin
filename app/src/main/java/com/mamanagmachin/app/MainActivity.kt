@@ -23,50 +23,61 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private class AppDb(context: android.content.Context) : SQLiteOpenHelper(context, "mamanagmachin.db", null, 1) {
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,unit TEXT NOT NULL,qty REAL NOT NULL,min_qty REAL NOT NULL,note TEXT)")
-        db.execSQL("CREATE TABLE movements(id INTEGER PRIMARY KEY AUTOINCREMENT,item_id INTEGER NOT NULL,type TEXT NOT NULL,qty REAL NOT NULL,vehicle TEXT,note TEXT,created TEXT NOT NULL)")
-        db.execSQL("CREATE TABLE machines(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,code TEXT,hours REAL NOT NULL,driver TEXT,fuel_avg REAL NOT NULL,note TEXT)")
-        db.execSQL("CREATE TABLE purchases(id INTEGER PRIMARY KEY AUTOINCREMENT,supplier TEXT,invoice TEXT,note TEXT,created TEXT NOT NULL)")
-        db.execSQL("CREATE TABLE maintenance(id INTEGER PRIMARY KEY AUTOINCREMENT,vehicle TEXT NOT NULL,title TEXT NOT NULL,due_hours REAL NOT NULL,note TEXT)")
-    }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
-    fun addItem(name:String,unit:String,qty:Double,min:Double,note:String) {
-        writableDatabase.insert("items",null,ContentValues().apply { put("name",name);put("unit",unit);put("qty",qty);put("min_qty",min);put("note",note) })
-    }
-    fun addMachine(name:String,code:String,hours:Double,driver:String,avg:Double) {
-        writableDatabase.insert("machines",null,ContentValues().apply { put("name",name);put("code",code);put("hours",hours);put("driver",driver);put("fuel_avg",avg) })
-    }
-    fun move(itemId:Long,type:String,qty:Double,vehicle:String,note:String) {
-        val db=writableDatabase
-        db.beginTransaction()
-        try {
-            val sign=if(type=="إدخال" || type=="إرجاع") 1 else -1
-            db.execSQL("UPDATE items SET qty=qty+? WHERE id=?", arrayOf(sign*qty,itemId))
-            db.insert("movements",null,ContentValues().apply {
-                put("item_id",itemId);put("type",type);put("qty",qty);put("vehicle",vehicle);put("note",note)
-                put("created",SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.getDefault()).format(Date()))
-            })
-            db.setTransactionSuccessful()
-        } finally { db.endTransaction() }
-    }
-    fun rows(table:String):List<List<String>> {
-        val cols=when(table) { "items"-> arrayOf("id","name","unit","qty","min_qty","note"); "machines"->arrayOf("id","name","code","hours","driver","fuel_avg"); "movements"->arrayOf("id","item_id","type","qty","vehicle","created"); else->arrayOf("*") }
-        val out= mutableListOf<List<String>>()
-        readableDatabase.rawQuery("SELECT ${cols.joinToString(",")} FROM $table ORDER BY id DESC",null).use { c ->
-            while(c.moveToNext()) out.add((0 until c.columnCount).map { c.getString(it) ?: "" })
-        }
-        return out
-    }
-    fun count(table:String)=readableDatabase.rawQuery("SELECT COUNT(*) FROM $table",null).use { if(it.moveToFirst()) it.getInt(0) else 0 }
-    fun itemOptions():List<Pair<Long,String>> {
-        val out= mutableListOf<Pair<Long,String>>()
-        readableDatabase.rawQuery("SELECT id,name,unit,qty FROM items ORDER BY name",null).use { c -> while(c.moveToNext()) out.add(c.getLong(0) to "${c.getString(1)} (${c.getString(3)} ${c.getString(2)})") }
-        return out
-    }
+private class AppDb(context: android.content.Context) : SQLiteOpenHelper(context, "mamanagmachin.db", null, 2) {
+ override fun onCreate(db:SQLiteDatabase) {
+  db.execSQL("CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,unit TEXT NOT NULL,qty REAL NOT NULL,min_qty REAL NOT NULL,note TEXT)")
+  db.execSQL("CREATE TABLE movements(id INTEGER PRIMARY KEY AUTOINCREMENT,item_id INTEGER NOT NULL,type TEXT NOT NULL,qty REAL NOT NULL,vehicle TEXT,note TEXT,created TEXT NOT NULL)")
+  db.execSQL("CREATE TABLE machines(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,code TEXT,hours REAL NOT NULL,driver TEXT,fuel_avg REAL NOT NULL,note TEXT)")
+  db.execSQL("CREATE TABLE purchases(id INTEGER PRIMARY KEY AUTOINCREMENT,supplier TEXT,invoice TEXT,note TEXT,created TEXT NOT NULL)")
+  db.execSQL("CREATE TABLE maintenance(id INTEGER PRIMARY KEY AUTOINCREMENT,vehicle TEXT NOT NULL,title TEXT NOT NULL,due_hours REAL NOT NULL,note TEXT)")
+  createExtra(db)
+ }
+ private fun createExtra(db:SQLiteDatabase) {
+  db.execSQL("CREATE TABLE IF NOT EXISTS machine_stock(id INTEGER PRIMARY KEY AUTOINCREMENT,item_id INTEGER NOT NULL,machine_id INTEGER NOT NULL,qty REAL NOT NULL DEFAULT 0,UNIQUE(item_id,machine_id))")
+  db.execSQL("CREATE TABLE IF NOT EXISTS fuel_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,machine_id INTEGER NOT NULL,hours_delta REAL NOT NULL,fuel_used REAL NOT NULL,created TEXT NOT NULL)")
+ }
+ override fun onUpgrade(db:SQLiteDatabase,oldVersion:Int,newVersion:Int) { if(oldVersion<2) createExtra(db) }
+ fun addItem(name:String,unit:String,qty:Double,min:Double,note:String,warehouse:Boolean,machines:List<Long>) {
+  val d=writableDatabase;d.beginTransaction()
+  try { val id=d.insertOrThrow("items",null,ContentValues().apply { put("name",name);put("unit",unit);put("qty",if(warehouse)qty else 0.0);put("min_qty",min);put("note",note) })
+   machines.forEach { mid->d.execSQL("INSERT INTO machine_stock(item_id,machine_id,qty) VALUES(?,?,?) ON CONFLICT(item_id,machine_id) DO UPDATE SET qty=qty+excluded.qty",arrayOf(id,mid,qty)) };d.setTransactionSuccessful()
+  } finally { d.endTransaction() }
+ }
+ fun addMachine(name:String,code:String,hours:Double,driver:String) { writableDatabase.insert("machines",null,ContentValues().apply { put("name",name);put("code",code);put("hours",hours);put("driver",driver);put("fuel_avg",0.0) }) }
+ private fun scalar(d:SQLiteDatabase)=d.rawQuery("SELECT changes()",null).use { if(it.moveToFirst())it.getLong(0) else 0L }
+ fun move(itemId:Long,type:String,qty:Double,machineId:Long,note:String) {
+  require(qty>0);val d=writableDatabase;d.beginTransaction()
+  try {
+   when(type) {
+    "إدخال"->d.execSQL("UPDATE items SET qty=qty+? WHERE id=?",arrayOf(qty,itemId))
+    "صرف"->{d.execSQL("UPDATE items SET qty=qty-? WHERE id=? AND qty>=?",arrayOf(qty,itemId,qty));check(scalar(d)>0){"رصيد المستودع غير كافٍ"}}
+    "تحويل إلى آلية"->{require(machineId>0){"اختر الآلية"};d.execSQL("UPDATE items SET qty=qty-? WHERE id=? AND qty>=?",arrayOf(qty,itemId,qty));check(scalar(d)>0){"رصيد المستودع غير كافٍ"};d.execSQL("INSERT INTO machine_stock(item_id,machine_id,qty) VALUES(?,?,?) ON CONFLICT(item_id,machine_id) DO UPDATE SET qty=qty+excluded.qty",arrayOf(itemId,machineId,qty))}
+    "إرجاع"->{require(machineId>0){"اختر الآلية"};d.execSQL("UPDATE machine_stock SET qty=qty-? WHERE item_id=? AND machine_id=? AND qty>=?",arrayOf(qty,itemId,machineId,qty));check(scalar(d)>0){"رصيد الآلية غير كافٍ"};d.execSQL("UPDATE items SET qty=qty+? WHERE id=?",arrayOf(qty,itemId))}
+   }
+   val vehicle=if(machineId>0) d.rawQuery("SELECT name FROM machines WHERE id=?",arrayOf(machineId.toString())).use { if(it.moveToFirst())it.getString(0) else "" } else ""
+   d.insert("movements",null,ContentValues().apply { put("item_id",itemId);put("type",type);put("qty",qty);put("vehicle",vehicle);put("note",note);put("created",SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.getDefault()).format(Date())) });d.setTransactionSuccessful()
+  } finally { d.endTransaction() }
+ }
+ fun recordWork(mid:Long,hours:Double,fuel:Double) {
+  require(hours>0&&fuel>=0);val d=writableDatabase;d.beginTransaction()
+  try {
+   val fid=d.rawQuery("SELECT id FROM items WHERE name LIKE '%مازوت%' OR name LIKE '%ديزل%' OR name LIKE '%وقود%' ORDER BY id LIMIT 1",null).use { if(it.moveToFirst())it.getLong(0) else -1L }
+   require(fid>0){"أضف مادة باسم مازوت أو ديزل أو وقود أولاً"}
+   if(fuel>0){d.execSQL("UPDATE machine_stock SET qty=qty-? WHERE item_id=? AND machine_id=? AND qty>=?",arrayOf(fuel,fid,mid,fuel));check(scalar(d)>0){"رصيد وقود الآلية غير كافٍ"}}
+   d.insert("fuel_sessions",null,ContentValues().apply { put("machine_id",mid);put("hours_delta",hours);put("fuel_used",fuel);put("created",SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.getDefault()).format(Date())) })
+   d.execSQL("UPDATE machines SET hours=hours+? WHERE id=?",arrayOf(hours,mid));d.setTransactionSuccessful()
+  } finally { d.endTransaction() }
+ }
+ fun machineFuel(mid:Long)=readableDatabase.rawQuery("SELECT COALESCE(SUM(s.qty),0) FROM machine_stock s JOIN items i ON i.id=s.item_id WHERE s.machine_id=? AND (i.name LIKE '%مازوت%' OR i.name LIKE '%ديزل%' OR i.name LIKE '%وقود%')",arrayOf(mid.toString())).use { if(it.moveToFirst())it.getDouble(0) else 0.0 }
+ fun machineAverage(mid:Long)=readableDatabase.rawQuery("SELECT CASE WHEN SUM(hours_delta)>0 THEN SUM(fuel_used)/SUM(hours_delta) ELSE 0 END FROM fuel_sessions WHERE machine_id=?",arrayOf(mid.toString())).use { if(it.moveToFirst())it.getDouble(0) else 0.0 }
+ fun machines():List<Pair<Long,String>> { val x=mutableListOf<Pair<Long,String>>();readableDatabase.rawQuery("SELECT id,name FROM machines ORDER BY name",null).use { c->while(c.moveToNext())x.add(c.getLong(0) to c.getString(1)) };return x }
+ fun itemOptions():List<Pair<Long,String>> { val x=mutableListOf<Pair<Long,String>>();readableDatabase.rawQuery("SELECT id,name,unit,qty FROM items ORDER BY name",null).use { c->while(c.moveToNext())x.add(c.getLong(0) to "${c.getString(1)} (${c.getString(3)} ${c.getString(2)})") };return x }
+ fun rows(table:String):List<List<String>> {
+  val cols=when(table){"items"->arrayOf("id","name","unit","qty","min_qty","note");"machines"->arrayOf("id","name","code","hours","driver","fuel_avg");"movements"->arrayOf("id","item_id","type","qty","vehicle","created");else->arrayOf("*")}
+  val x=mutableListOf<List<String>>();readableDatabase.rawQuery("SELECT ${cols.joinToString(",")} FROM $table ORDER BY id DESC",null).use { c->while(c.moveToNext())x.add((0 until c.columnCount).map{c.getString(it)?: ""}) };return x
+ }
+ fun count(table:String)=readableDatabase.rawQuery("SELECT COUNT(*) FROM $table",null).use{if(it.moveToFirst())it.getInt(0)else 0}
 }
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,8 +110,8 @@ class MainActivity : ComponentActivity() {
         }
         if(showAdd) {
             when(page) {
-                "المستودع" -> AddItemDialog({n,u,q,m,note -> db.addItem(n,u,q,m,note);refresh++;showAdd=false},{showAdd=false})
-                "الآليات" -> AddMachineDialog({n,c,h,d,a -> db.addMachine(n,c,h,d,a);refresh++;showAdd=false},{showAdd=false})
+                "المستودع" -> AddItemDialog(db,{n,u,q,m,note,warehouse,machineIds -> db.addItem(n,u,q,m,note,warehouse,machineIds);refresh++;showAdd=false},{showAdd=false})
+                "الآليات" -> AddMachineDialog({n,c,h,d -> db.addMachine(n,c,h,d);refresh++;showAdd=false},{showAdd=false})
                 "الحركات" -> AddMovementDialog(db,{refresh++;showAdd=false},{showAdd=false})
             }
         }
@@ -143,12 +154,20 @@ class MainActivity : ComponentActivity() {
     }
 }
 @Composable private fun MachineList(db:AppDb) {
-    Text("الآليات",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
-    val rows=db.rows("machines")
-    if(rows.isEmpty()) EmptyState("لا توجد آليات مسجلة","اضغط + لإضافة آلية")
-    LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp)) { items(rows) { r -> Card { Column(Modifier.fillMaxWidth().padding(14.dp)) {
-        Text(r[1],fontWeight=FontWeight.Bold);Text("الرمز: ${r[2]} • الساعات: ${r[3]}");Text("السائق: ${r[4]} • متوسط الوقود: ${r[5]}")
-    } } } }
+ var workFor by remember { mutableStateOf<Pair<Long,String>?>(null) }
+ Text("الآليات",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
+ val rows=db.rows("machines")
+ if(rows.isEmpty()) EmptyState("لا توجد آليات مسجلة","اضغط + لإضافة آلية")
+ LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp)) { items(rows) { r->
+  val id=r[0].toLongOrNull()?:-1L
+  Card { Column(Modifier.fillMaxWidth().padding(14.dp),verticalArrangement=Arrangement.spacedBy(5.dp)) {
+   Text(r[1],fontWeight=FontWeight.Bold);Text("الرمز: ${r[2]} • عداد الساعات: ${r[3]}");Text("السائق: ${r[4]}")
+   Text("متوسط الاستهلاك المحسوب: %.2f لتر/ساعة".format(db.machineAverage(id)))
+   Text("الوقود المتبقي في الآلية: %.2f لتر".format(db.machineFuel(id)))
+   Button(onClick={workFor=id to r[1]},modifier=Modifier.fillMaxWidth()){Text("تسجيل ساعات العمل واستهلاك الوقود")}
+  } }
+ } }
+ workFor?.let { v->AddWorkDialog(v.second,{h,f->db.recordWork(v.first,h,f);workFor=null},{workFor=null}) }
 }
 @Composable private fun MovementList(db:AppDb) {
     Text("سجل حركات المستودع",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold)
@@ -174,26 +193,40 @@ class MainActivity : ComponentActivity() {
 @Composable private fun Field(label:String,value:String,onChange:(String)->Unit,number:Boolean=false) {
     OutlinedTextField(value,onChange,label={Text(label)},modifier=Modifier.fillMaxWidth(),singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=if(number) KeyboardType.Decimal else KeyboardType.Text))
 }
-@Composable private fun AddItemDialog(save:(String,String,Double,Double,String)->Unit,close:()->Unit) {
-    var name by remember { mutableStateOf("") };var unit by remember { mutableStateOf("قطعة") };var qty by remember { mutableStateOf("0") };var min by remember { mutableStateOf("0") };var note by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest=close,title={Text("إضافة مادة")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
-        Field("اسم المادة",name,{name=it});Field("وحدة القياس",unit,{unit=it});Field("الكمية الحالية",qty,{qty=it},true);Field("حد التنبيه",min,{min=it},true);Field("ملاحظات",note,{note=it})
-    }},confirmButton={TextButton(onClick={if(name.isNotBlank()) save(name,unit,qty.toDoubleOrNull()?:0.0,min.toDoubleOrNull()?:0.0,note)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
+@Composable private fun AddItemDialog(db:AppDb,save:(String,String,Double,Double,String,Boolean,List<Long>)->Unit,close:()->Unit) {
+ var name by remember{mutableStateOf("")};var unit by remember{mutableStateOf("قطعة")};var qty by remember{mutableStateOf("0")};var min by remember{mutableStateOf("0")};var note by remember{mutableStateOf("")}
+ var warehouse by remember{mutableStateOf(true)};val machines=db.machines();val selected=remember{mutableStateListOf<Long>()}
+ AlertDialog(onDismissRequest=close,title={Text("إضافة مادة")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)){
+  Field("اسم المادة",name,{name=it});Field("وحدة القياس",unit,{unit=it});Field("الكمية المضافة",qty,{qty=it},true);Field("حد التنبيه",min,{min=it},true)
+  Text("أين تريد إضافة المادة؟",fontWeight=FontWeight.Bold)
+  Row(verticalAlignment=Alignment.CenterVertically){Checkbox(warehouse,{warehouse=it});Text("المستودع")}
+  machines.forEach{(id,label)->Row(verticalAlignment=Alignment.CenterVertically){Checkbox(selected.contains(id),{if(it)selected.add(id)else selected.remove(id)});Text("الآليات: $label")}}
+  Field("ملاحظات",note,{note=it})
+ }},confirmButton={TextButton(onClick={if(name.isNotBlank()&&(warehouse||selected.isNotEmpty()))save(name,unit,qty.toDoubleOrNull()?:0.0,min.toDoubleOrNull()?:0.0,note,warehouse,selected.toList())}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
-@Composable private fun AddMachineDialog(save:(String,String,Double,String,Double)->Unit,close:()->Unit) {
-    var name by remember { mutableStateOf("") };var code by remember { mutableStateOf("") };var hours by remember { mutableStateOf("0") };var driver by remember { mutableStateOf("") };var avg by remember { mutableStateOf("0") }
-    AlertDialog(onDismissRequest=close,title={Text("إضافة آلية")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
-        Field("اسم الآلية",name,{name=it});Field("الرقم/الرمز",code,{code=it});Field("عداد الساعات",hours,{hours=it},true);Field("السائق",driver,{driver=it});Field("متوسط استهلاك الوقود",avg,{avg=it},true)
-    }},confirmButton={TextButton(onClick={if(name.isNotBlank()) save(name,code,hours.toDoubleOrNull()?:0.0,driver,avg.toDoubleOrNull()?:0.0)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
+@Composable private fun AddMachineDialog(save:(String,String,Double,String)->Unit,close:()->Unit) {
+ var name by remember{mutableStateOf("")};var code by remember{mutableStateOf("")};var hours by remember{mutableStateOf("0")};var driver by remember{mutableStateOf("")}
+ AlertDialog(onDismissRequest=close,title={Text("إضافة آلية")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)){
+  Field("اسم الآلية",name,{name=it});Field("الرقم/الرمز",code,{code=it});Field("قراءة عداد الساعات الحالية",hours,{hours=it},true);Field("السائق",driver,{driver=it})
+  Text("سيحسب البرنامج متوسط استهلاك الوقود تلقائياً من سجلات التشغيل.",style=MaterialTheme.typography.bodySmall)
+ }},confirmButton={TextButton(onClick={if(name.isNotBlank())save(name,code,hours.toDoubleOrNull()?:0.0,driver)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
+}
+@Composable private fun AddWorkDialog(machine:String,save:(Double,Double)->Unit,close:()->Unit) {
+ var hours by remember{mutableStateOf("")};var fuel by remember{mutableStateOf("")}
+ AlertDialog(onDismissRequest=close,title={Text("تسجيل تشغيل: $machine")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
+  Field("ساعات العمل خلال هذه الفترة",hours,{hours=it},true);Field("الوقود المستهلك فعلياً (لتر)",fuel,{fuel=it},true)
+  Text("سيُحدّث عداد الساعات، ويُخصم الوقود من رصيد الآلية، ويُحسب المتوسط التراكمي لتر/ساعة.",style=MaterialTheme.typography.bodySmall)
+ }},confirmButton={TextButton(onClick={val h=hours.toDoubleOrNull();val f=fuel.toDoubleOrNull();if(h!=null&&f!=null&&h>0&&f>=0)save(h,f)}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
 @Composable private fun AddMovementDialog(db:AppDb,done:()->Unit,close:()->Unit) {
-    val opts=db.itemOptions();var selected by remember { mutableStateOf(opts.firstOrNull()?.first ?: -1L) };var type by remember { mutableStateOf("إدخال") };var qty by remember { mutableStateOf("1") };var vehicle by remember { mutableStateOf("") };var note by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest=close,title={Text("تسجيل حركة")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
-        if(opts.isEmpty()) Text("أضف مادة أولاً قبل تسجيل الحركة.")
-        else {
-            Text("المادة");opts.forEach { (id,label)->Row(verticalAlignment=Alignment.CenterVertically) { RadioButton(selected==id,{selected=id});Text(label) } }
-            Text("نوع الحركة");Row { listOf("إدخال","صرف","إرجاع").forEach { t->Row(verticalAlignment=Alignment.CenterVertically) { RadioButton(type==t,{type=t});Text(t) } } }
-            Field("الكمية",qty,{qty=it},true);Field("الآلية (اختياري)",vehicle,{vehicle=it});Field("ملاحظات",note,{note=it})
-        }
-    }},confirmButton={TextButton(enabled=opts.isNotEmpty(),onClick={val amount=qty.toDoubleOrNull()?:0.0;if(amount>0){db.move(selected,type,amount,vehicle,note);done()}}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
+ val opts=db.itemOptions();val machines=db.machines();var selected by remember{mutableStateOf(opts.firstOrNull()?.first?:-1L)}
+ var type by remember{mutableStateOf("إدخال")};var qty by remember{mutableStateOf("1")};var machine by remember{mutableStateOf(-1L)};var note by remember{mutableStateOf("")};var error by remember{mutableStateOf("")}
+ AlertDialog(onDismissRequest=close,title={Text("حركة مخزون")},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)){
+  if(opts.isEmpty())Text("أضف مادة أولاً.") else {
+   Text("المادة");opts.forEach{(id,label)->Row(verticalAlignment=Alignment.CenterVertically){RadioButton(selected==id,{selected=id});Text(label)}}
+   Text("نوع الحركة");listOf("إدخال","صرف","تحويل إلى آلية","إرجاع").forEach{t->Row(verticalAlignment=Alignment.CenterVertically){RadioButton(type==t,{type=t});Text(t)}}
+   if(type=="تحويل إلى آلية"||type=="إرجاع"){Text("اختر الآلية");machines.forEach{(id,label)->Row(verticalAlignment=Alignment.CenterVertically){RadioButton(machine==id,{machine=id});Text(label)}}}
+   Field("الكمية",qty,{qty=it},true);Field("ملاحظات",note,{note=it});if(error.isNotBlank())Text(error,color=MaterialTheme.colorScheme.error)
+  }
+ }},confirmButton={TextButton(enabled=opts.isNotEmpty(),onClick={try{val amount=qty.toDoubleOrNull()?:0.0;require(amount>0){"أدخل كمية صحيحة"};db.move(selected,type,amount,machine,note);done()}catch(e:Exception){error=e.message?:"تعذر حفظ الحركة"}}){Text("حفظ")}},dismissButton={TextButton(onClick=close){Text("إلغاء")}})
 }
